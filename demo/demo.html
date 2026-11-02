@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Démo pilote-ecran · 0</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --fond: #f6f7fb; --texte: #1b1e28; --carte: #ffffff; --accent: #2f6fe0; --bord: #d9dce6; }
+  :root[data-theme="sombre"] { --fond: #14161c; --texte: #e8eaf2; --carte: #1f2330; --accent: #8fd3b3; --bord: #343948; }
+  body { margin: 0; padding: 32px; font-family: "DejaVu Sans", sans-serif; background: var(--fond); color: var(--texte); }
+  main { max-width: 760px; margin: 0 auto; display: grid; gap: 20px; }
+  section { background: var(--carte); border: 1px solid var(--bord); border-radius: 12px; padding: 20px; }
+  h1 { margin: 0 0 6px; font-size: 26px; }
+  h2 { margin: 0 0 12px; font-size: 18px; }
+  button { font: inherit; padding: 10px 16px; border-radius: 8px; border: 1px solid var(--bord); background: var(--accent); color: #fff; cursor: pointer; }
+  button.secondaire { background: transparent; color: var(--texte); }
+  input { font: inherit; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--bord); background: var(--fond); color: var(--texte); width: 320px; }
+  .ligne { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .grand { font-size: 44px; font-weight: bold; min-width: 90px; }
+  ul { margin: 12px 0 0; padding-left: 22px; }
+  li { padding: 4px 0; }
+  #etat { font-family: "DejaVu Sans Mono", monospace; font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <section>
+    <h1>Démo pilote-ecran</h1>
+    <p>Page écrite en direct le 09/10/2026. Chaque action change le titre de l'onglet, la ligne d'état et le contenu : tout est lisible en données.</p>
+  </section>
+
+  <section aria-labelledby="t-compteur">
+    <h2 id="t-compteur">Compteur</h2>
+    <div class="ligne">
+      <span class="grand" id="compteur" aria-live="polite">0</span>
+      <button id="plus" type="button">Compter +1</button>
+      <button id="zero" type="button" class="secondaire">Remettre à zéro</button>
+    </div>
+  </section>
+
+  <section aria-labelledby="t-taches">
+    <h2 id="t-taches">Tâches</h2>
+    <form id="forme" class="ligne">
+      <input id="tache" type="text" placeholder="Nouvelle tâche" aria-label="Nouvelle tâche" autocomplete="off">
+      <button id="ajouter" type="submit">Ajouter</button>
+    </form>
+    <ul id="liste" aria-label="Liste des tâches"></ul>
+  </section>
+
+  <section aria-labelledby="t-theme">
+    <h2 id="t-theme">Apparence</h2>
+    <div class="ligne">
+      <button id="theme" type="button" class="secondaire">Changer de thème</button>
+      <span id="theme-actuel">Thème clair</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>État</h2>
+    <div id="etat" role="status">Dernière action : aucune</div>
+  </section>
+</main>
+
+<script>
+  let n = 0;
+  const compteur = document.getElementById("compteur");
+  const etat = document.getElementById("etat");
+  const liste = document.getElementById("liste");
+  const champ = document.getElementById("tache");
+
+  function noter(message) {
+    etat.textContent = "Dernière action : " + message + " (" + new Date().toLocaleTimeString("fr-FR") + ")";
+    document.title = "Démo pilote-ecran · " + n + (liste.children.length ? " · " + liste.children.length + " tâche(s)" : "");
+    console.log("[démo]", message);
+  }
+
+  document.getElementById("plus").addEventListener("click", () => { n += 1; compteur.textContent = n; noter("compteur passé à " + n); });
+  document.getElementById("zero").addEventListener("click", () => { n = 0; compteur.textContent = n; noter("compteur remis à zéro"); });
+
+  document.getElementById("forme").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const texte = champ.value.trim();
+    if (!texte) { noter("tâche vide refusée"); return; }
+    const li = document.createElement("li");
+    li.textContent = texte;
+    liste.appendChild(li);
+    champ.value = "";
+    noter("tâche ajoutée : « " + texte + " »");
+  });
+
+  document.getElementById("theme").addEventListener("click", () => {
+    const sombre = document.documentElement.getAttribute("data-theme") !== "sombre";
+    document.documentElement.setAttribute("data-theme", sombre ? "sombre" : "clair");
+    document.getElementById("theme-actuel").textContent = sombre ? "Thème sombre" : "Thème clair";
+    noter("thème " + (sombre ? "sombre" : "clair"));
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.bak-*
+.sauvegardes/
+recettes/
+flux/Vulkan-Headers/
+flux/libpilote_flux.so
+flux/test_instance
+tests/fixtures/
+*.log
