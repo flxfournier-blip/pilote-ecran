@@ -45,7 +45,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import commun  # noqa: E402
 from commun import chemin  # noqa: E402
 
-DISPLAY = os.environ.get("DISPLAY") or ":0"
+DISPLAY = commun.affichage()   # le service suit la session graphique ; ceci rattrape un DISPLAY hérité périmé
 _GDM = f"/run/user/{os.getuid()}/gdm/Xauthority"
 XAUTH = os.environ.get("XAUTHORITY") or (_GDM if os.path.exists(_GDM) else os.path.expanduser("~/.Xauthority"))
 os.environ["DISPLAY"] = DISPLAY
@@ -1508,6 +1508,14 @@ class Pont(threading.Thread):
                     self._json(400, {"erreur": f"annonce invalide : {e}"[:120]})
                     return
                 self._json(200, pont.annoncer(app, titre, lignes, etat))
+                # 07/11/2026 : la carte vit désormais dans le service `regard` (Rust, 127.0.0.1:8793) ; l'annonce lui est
+                # transmise telle quelle, sans bloquer (le TPE, lui, ne connaît que ce pont).
+                try:
+                    import urllib.request as _ur
+                    corps = json.dumps({"app": app, "titre": titre, "lignes": lignes, "etat": etat}).encode("utf-8")
+                    _ur.urlopen(_ur.Request("http://127.0.0.1:8793/annonce", data=corps, headers={"Content-Type": "application/json"}), timeout=0.8).close()
+                except Exception:
+                    pass
 
             def flux(self, srcs):
                 self.send_response(200)
@@ -2344,10 +2352,14 @@ def main():
         devtools.start()
     except Exception as e:
         bus.emettre("devtools", "erreur", f"DevTools : prise indisponible ({e})"[:160])
-    carte = Carte(bus, lecteur, fen, devtools)
-    bus.declencheurs.append(carte.sur_evenement)
-    bus.declencheurs.append(carte.sur_devtools)
-    GLib.timeout_add(100, garde(carte.tic))
+    # 08/11/2026 : la carte vit dans le service Rust `regard` (127.0.0.1:8793) ; celle-ci, redondante (lecture AT-SPI de
+    # l'active chaque seconde, ~10 % de CPU), ne tourne plus que sur demande explicite (PILOTE_VEILLE_CARTE=1).
+    carte = None
+    if os.environ.get("PILOTE_VEILLE_CARTE", "0") == "1":
+        carte = Carte(bus, lecteur, fen, devtools)
+        bus.declencheurs.append(carte.sur_evenement)
+        bus.declencheurs.append(carte.sur_devtools)
+        GLib.timeout_add(100, garde(carte.tic))
     pont, erreur = None, None
     for essai in range(10):                   # au redémarrage, l'ancien processus peut tenir le port une seconde
         try:

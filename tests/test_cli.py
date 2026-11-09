@@ -132,6 +132,51 @@ class TestEtiquette(unittest.TestCase):
             bac.fermer()
 
 
+class TestAffichage(unittest.TestCase):
+    """08/11/2026 : la session graphique a redémarré sur :1, les services gardaient :0."""
+
+    def setUp(self):
+        import tempfile
+        self.dossier = tempfile.mkdtemp(prefix="x11-")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.dossier, ignore_errors=True)
+
+    def prise(self, n, age=0):
+        p = os.path.join(self.dossier, f"X{n}")
+        open(p, "w").close()
+        t = time.time() - age
+        os.utime(p, (t, t))
+
+    def test_display_vivant_garde(self):
+        import commun
+        self.prise(0, age=100)
+        self.prise(1)
+        self.assertEqual(commun.affichage(":0", self.dossier), ":0")
+        self.assertEqual(commun.affichage(":0.0", self.dossier), ":0.0")
+
+    def test_display_mort_remplace_par_la_prise_vivante(self):
+        import commun
+        self.prise(1)
+        self.assertEqual(commun.affichage(":0", self.dossier), ":1")
+
+    def test_sans_display_la_plus_recente(self):
+        import commun
+        self.prise(0, age=3600)
+        self.prise(2)
+        self.assertEqual(commun.affichage("", self.dossier), ":2")
+
+    def test_aucune_prise_repli(self):
+        import commun
+        self.assertEqual(commun.affichage(":3", self.dossier), ":3")
+        self.assertEqual(commun.affichage("", self.dossier), ":0")
+
+    def test_distant_non_juge(self):
+        import commun
+        self.assertEqual(commun.affichage("hote:5", self.dossier), "hote:5")
+
+
 class TestRecetteRefuse(unittest.TestCase):
     """La recette écran ne part ni sous STOP, ni sur un écran réservé, ni sans GO."""
 

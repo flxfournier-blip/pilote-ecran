@@ -6,12 +6,19 @@ Boucle « computer use » locale : capture d'écran + arbre d'accessibilité
 Pendant le pilotage, un cadre orange (cadre.py) entoure l'écran ; si la
 souris bouge sans nous, tout s'arrête (fichier `stop`, cf. `reprendre`).
 
+    ecran regard [--fenetre MOTIF] [--element eN] [--tout] [--lignes N] [--lecteur NOM] [--sans-memoire] [--json]
+      (07/11/2026 : l'écran lu SANS capture par le service `regard` — scène, ce qui a changé depuis TON dernier regard,
+       fenêtre active en plan avec références eN ; `ecran cliquer e12` clique une référence après vérification fraîche)
+    ecran regard --attendre "texte" | --disparu "texte" [--fenetre MOTIF] [--max S] [--pas MS]   (sans OCR ; exit 2 au délai)
+    ecran regard --oeil [--fenetre MOTIF]   (fenêtre muette : capture + OCR + Qwen local → éléments positionnés eN, puis la page)
+    ecran lire e42            (le texte COMPLET d'une référence : terminal, document, mail, champ — sans image)
     ecran voir [--rapide] [--zone X Y L H] [--plein] [--tout] [--fenetre MOTIF] [--sans-marques] [--sans-ocr]
     ecran texte [--zone X Y L H | --fenetre-active] [--conf N] [--json]
     ecran chercher "texte" ["texte2"…] [--zone X Y L H] [--exact] [--json]
     ecran cliquer <id> | id:<ID_CARTE> | tN | @"texte" [--n K] [--zone X Y L H] | <x> <y>  [--double] [--droit] [--milieu] [--img]
     ecran taper "texte" [--coller] [--stdin] [--dans @"champ" | --dans FENÊTRE] [--entree]
     ecran touche ctrl+l Tab Return [--dans FENÊTRE]
+    ecran captcha X Y L H [--message "…"]     (découpe le code à l'écran et l'envoie à Félix par ntfy ; il répond dans la conversation)
     ecran defiler bas|haut [N] [--a X Y | tN | @"texte"]    ecran souris X Y | tN | @"texte"
       (cliquer/taper/touche/defiler : [--verifier "texte"] [--attendre S] [--sans-capture] ; cliquer : [--avec ctrl|shift])
       (cliquer/souris : [--lent], trajet progressif d'environ 2 s)
@@ -68,7 +75,7 @@ from commun import (AGE_OCCUPE, SEUIL, chemin, ecrire, effacer,  # noqa: F401
 # « No module named gi » — constaté le 08/09 au premier pilotage de Charli.
 PYTHON_SYS = "/usr/bin/python3"
 
-DISPLAY = os.environ.get("DISPLAY") or ":0"
+DISPLAY = commun.affichage()   # pas os.environ tel quel : un DISPLAY hérité peut viser une session morte
 XAUTH = os.environ.get("XAUTHORITY") or (
     f"/run/user/{os.getuid()}/gdm/Xauthority"
     if os.path.exists(f"/run/user/{os.getuid()}/gdm/Xauthority")
@@ -78,6 +85,7 @@ ICI = os.path.dirname(os.path.realpath(__file__))  # realpath : ecran est un lie
 LANCEUR = os.path.join(ICI, "ecran")
 CADRE_UNITE = "pilote-ecran-cadre"
 PORT_VEILLE = 8792         # pont HTTP local de veille.py (lecture seule) : /etat /texte /evenements /flux
+PORT_REGARD = int(os.environ.get("PILOTE_REGARD_PORT") or 8793)   # service `regard` (Rust) : /regard /carte /carte/cible
 PP_UNITE = "pilote-ecran-presse-papiers"   # xclip qui survit à `ecran`
 PYTHON_CADRE = os.path.expanduser("~/jarvis/charli-app/venv/bin/python")  # PySide6
 SEUIL_VIEUX = 60           # s : au-delà, la liste d'éléments est réputée périmée
@@ -1155,12 +1163,14 @@ def cmd_voir(args):
             invalider_reperes()
             fenetres, elements = [], []
             wid, nom_actif, pid = fenetre_active()
+            noter_fenetre_travail(wid, nom_actif, "voir")
             noeuds, coupe, relances, duree_atspi = 0, False, 0, 0.0
         else:
             activer_accessibilite()
             Atspi = atspi()
             t0 = time.monotonic()
             fenetres, (wid, nom_actif, pid) = choisir_fenetres_atspi(Atspi, tout, motif)
+            noter_fenetre_travail(wid, nom_actif, "voir")
             elements, vus = [], set()
             deadline = t0 + DELAI_ATSPI
             noeuds, coupe, relances = 0, False, 0
@@ -1498,10 +1508,10 @@ def lire_carte():
     """État structuré local, sans capture ; nécessaire avant une action sans image."""
     import urllib.request
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{PORT_VEILLE}/carte", timeout=8) as r:
+        with urllib.request.urlopen(f"http://127.0.0.1:{PORT_REGARD}/carte", timeout=8) as r:
             return json.load(r)
     except Exception as e:
-        raise SystemExit(f"✗ carte inaccessible (127.0.0.1:{PORT_VEILLE}) : {e}")
+        raise SystemExit(f"✗ carte inaccessible (127.0.0.1:{PORT_REGARD}, service pilote-ecran-regard) : {e}")
 
 
 def resoudre_cible_carte(identifiant):
@@ -1510,7 +1520,7 @@ def resoudre_cible_carte(identifiant):
     import urllib.parse
     import urllib.request
     try:
-        url = f"http://127.0.0.1:{PORT_VEILLE}/carte/cible?" + urllib.parse.urlencode({"id": identifiant})
+        url = f"http://127.0.0.1:{PORT_REGARD}/carte/cible?" + urllib.parse.urlencode({"id": identifiant})
         with urllib.request.urlopen(url, timeout=8) as r:
             d = json.load(r)
     except urllib.error.HTTPError as e:
@@ -1599,6 +1609,68 @@ def verifier_fenetre(motif):
                          f"\n  → `ecran fenetre \"{motif}\"` d'abord")
 
 
+# 09/11/2026 — « améliore pour éviter les frappes ratées » (Félix). Vécu le matin même : `cliquer @"FERMER"` a fermé la
+# fenêtre Firefox pilotée ; la fenêtre active est devenue le VS Code de Félix et « France », Flèche bas, Entrée y sont
+# partis. Deux règles désormais, pour `taper` et `touche` :
+#   1. la FENÊTRE DE TRAVAIL = celle du dernier `voir`, du dernier clic ou de la dernière activation (`fenetre`) ; sans
+#      `--dans`, on ne tape que là. Si la fenêtre active a changé entre-temps : refus, rien n'est envoyé.
+#   2. les fenêtres de Félix (VS Code, Mailspring, Proton Mail Bridge, Codex, Agents) ne reçoivent JAMAIS de frappe,
+#      sauf `--dans` qui les nomme — c'est la règle 4 d'AGENTS.md (lecture seule sauf demande explicite).
+FENETRES_DE_FELIX = ("visual studio code", "mailspring", "proton mail bridge", "codex", "agents")
+
+
+def noter_fenetre_travail(wid=None, nom=None, par="action"):
+    """La fenêtre où le pilote vient de regarder ou d'agir devient la seule où une frappe est permise."""
+    if wid is None:
+        wid, nom, _ = fenetre_active()
+    if not wid:
+        return
+    try:
+        numero = int(str(wid), 0)
+    except (TypeError, ValueError):
+        return
+    ecrire("fenetre_travail.json", json.dumps({"wid": numero, "nom": nom or "", "ts": time.time(), "par": par}))
+
+
+def fenetre_travail():
+    try:
+        with open(chemin("fenetre_travail.json")) as f:
+            d = json.load(f)
+        return d if time.time() - float(d.get("ts", 0)) <= EXPIRATION_PILOTE else None
+    except (OSError, ValueError):
+        return None
+
+
+def verifier_fenetre_felix(dans=None, nom=None):
+    """Règle 4 : aucune frappe dans une fenêtre de Félix, sauf `--dans` qui la désigne (demande explicite)."""
+    if nom is None:
+        _, nom, _ = fenetre_active()
+    nom_l = (nom or "").lower()
+    if any(f in nom_l for f in FENETRES_DE_FELIX) and not (dans and dans.lower() in nom_l):
+        raise SystemExit(f"✗ « {nom} » est une fenêtre de Félix : aucune frappe n'y est envoyée"
+                         f" (règle 4) — `--dans \"{nom}\"` seulement sur sa demande explicite")
+
+
+def verifier_fenetre_travail(action, dans=None):
+    """Sans `--dans`, la frappe reste dans la fenêtre de travail (dernier voir / clic / activation, < 30 min)."""
+    actif, nom, _ = fenetre_active()
+    verifier_fenetre_felix(dans, nom)
+    if dans:
+        return                                   # `--dans MOTIF` est contrôlé par verifier_fenetre
+    t = fenetre_travail()
+    if not t:
+        noter_fenetre_travail(actif, nom, action)
+        return
+    try:
+        meme = bool(actif) and int(str(actif), 0) == int(t["wid"])
+    except (TypeError, ValueError, KeyError):
+        meme = False
+    if not meme:
+        raise SystemExit(f"✗ la fenêtre active « {nom} » n'est pas la fenêtre de travail « {t.get('nom')} »"
+                         f" (dernier {t.get('par')}) : rien n'est tapé"
+                         f"\n  → `ecran fenetre \"{t.get('nom')}\"` ou `ecran voir` d'abord")
+
+
 MODIFICATEURS = {"ctrl", "shift", "alt", "super"}
 
 
@@ -1613,6 +1685,8 @@ def cmd_cliquer(args):
     mods = avec.lower().split("+") if avec else []
     if any(m not in MODIFICATEURS for m in mods):
         raise SystemExit(f"✗ --avec : {avec} (attendu : ctrl, shift, alt, super, ou ctrl+shift…)")
+    # `cliquer e12` : une référence du regard (service Rust) vaut `id:e12` ; jamais confondue avec un numéro de `voir`.
+    args = [f"id:{a}" if re.fullmatch(r"e\d+", a) else a for a in args]
     stable = next((a for a in args if a.startswith("id:")), None)
     if stable:
         if not stable[3:] or any(a != stable and a not in ("--double", "--droit", "--milieu") for a in args):
@@ -1675,12 +1749,52 @@ def cmd_cliquer(args):
         finally:
             for m in reversed(mods):
                 sh("xdotool", "keyup", m, ok=False)
+    noter_fenetre_travail(par="clic")              # la fenêtre où l'on vient de cliquer est celle où l'on peut taper
     quoi = (e["desc"] if e and "desc" in e else f"{e['role']} « {e['nom']} »" if e
             else "coordonnées")
     lignes, ok = verdict_carte(avant, attendre) if sans_capture else verdict(avant, attendre, verifier, voir=voir)
     conclure(f"✓ clic{' double' if '--double' in args else ''}"
              f"{' droit' if bouton == '3' else ''}{' avec ' + avec if avec else ''}"
              f" sur {quoi} en {x},{y}", lignes, ok)
+
+
+def cmd_captcha(args):
+    """09/11/2026 — Félix : « pour les captcha, envoie-moi une notification, je vais le lire ». Le pilote ne devine plus un
+    code de sécurité à l'œil : il découpe la zone, l'agrandit ×3 et l'envoie sur le téléphone de Félix (ntfy, pièce jointe).
+    Félix répond dans la conversation ; l'agent tape alors le code avec `ecran taper`. Lecture seule : aucun clic."""
+    vals = [a for a in args if not a.startswith("--")]
+    message, _ = extraire_option(args, "--message")
+    if len(vals) != 4:
+        raise SystemExit('✗ usage : ecran captcha X Y L H [--message "…"]  (zone écran du code, en pixels)')
+    try:
+        zone = tuple(int(v) for v in vals)
+    except ValueError:
+        raise SystemExit("✗ X Y L H doivent être des entiers")
+    if zone[2] <= 0 or zone[3] <= 0:
+        raise SystemExit("✗ largeur et hauteur doivent être positives")
+    from PIL import Image
+    img = capture_texte(zone).convert("RGB")
+    img = img.resize((img.width * 3, img.height * 3), Image.LANCZOS)
+    png = chemin("captcha.png")
+    img.save(png)
+    texte = message or "Code de securite a lire : reponds-le dans la conversation Claude."
+    if os.path.realpath(ETAT) != os.path.realpath(ETAT_REEL):
+        print(f"✓ captcha découpé : {png} ({img.width}×{img.height}) — (test : pas d'envoi ntfy)")
+        return
+    try:
+        import urllib.request
+        topic = open(os.path.expanduser("~/.jarvis/ntfy_topic")).read().strip()
+        with open(png, "rb") as f:
+            corps = f.read()
+        urllib.request.urlopen(urllib.request.Request(
+            f"https://ntfy.sh/{topic}", data=corps, method="PUT",
+            headers={"Title": "JARVIS - captcha a lire", "Filename": "captcha.png",
+                     "Message": texte.encode("ascii", "replace").decode(), "Priority": "high", "Tags": "eyes"}),
+            timeout=15)
+    except Exception as e:
+        raise SystemExit(f"✗ envoi ntfy impossible ({e}) — l'image est dans {png}")
+    print(f"✓ captcha envoyé à Félix (ntfy, {img.width}×{img.height}) : {png}\n"
+          "  → attends sa réponse dans la conversation, puis `ecran taper \"<code>\"` dans le champ.")
 
 
 def presse_papiers(texte):
@@ -1737,6 +1851,8 @@ def cmd_taper(args):
     with agir(bouge=bool(champ), vers=champ[:2] if champ else None) as ctx, frappe_en_cours("taper"):
         if dans and not champ:
             verifier_fenetre(dans)
+        if not sans_capture:                      # sans capture, la carte épingle déjà la fenêtre (verifier_fenetre_carte)
+            verifier_fenetre_travail("taper", dans if (dans and not champ) else None)
         avant = lire_carte() if sans_capture else capture_texte()
         if sans_capture:
             verifier_apres_lecture_carte(ctx)
@@ -1792,6 +1908,8 @@ def cmd_touche(args):
                              " pour une option)")
     envoyees = []
     with agir() as ctx, frappe_en_cours("touche"):
+        if not sans_capture:
+            verifier_fenetre_travail("touche", dans)
         avant = lire_carte() if sans_capture else capture_texte()
         if sans_capture:
             verifier_apres_lecture_carte(ctx)
@@ -1918,9 +2036,37 @@ def lire_par_ocr(zone, refs, autour):
         sys.exit(INTROUVABLE)
 
 
+def lire_regard(ref):
+    """`ecran lire e42` : le texte COMPLET d'une référence du regard (terminal, page de document, mail, champ),
+    par l'interface Texte de l'objet ou le DOM de la page — sans image. Lecture seule, sans réservation."""
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{PORT_REGARD}/texte?" + urllib.parse.urlencode({"id": ref}), timeout=20) as r:
+            d = json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            raison = json.load(e).get("erreur", str(e))
+        except (ValueError, OSError):
+            raison = str(e)
+        raise SystemExit(f"✗ lire {ref} : {raison}")
+    except Exception as e:
+        raise SystemExit(f"✗ regard inaccessible (127.0.0.1:{PORT_REGARD}) : {e}")
+    tete = f"{d.get('role', '?')} « {d.get('nom', '')} » {ref} — {d.get('longueur', 0)} caractères (source {d.get('source', '?')})"
+    if d.get("tronque"):
+        tete += " — TRONQUÉ"
+    if d.get("note"):
+        tete += f" — {d['note']}"
+    print(tete)
+    print(d.get("texte", ""))
+
+
 def cmd_lire(args):
     if not args:
-        raise SystemExit('✗ usage : ecran lire <id> | tN | --zone X Y L H | @"ancre" [--autour LxH]')
+        raise SystemExit('✗ usage : ecran lire <id> | eN | tN | --zone X Y L H | @"ancre" [--autour LxH]')
+    if re.fullmatch(r"e\d+", args[0]):
+        return lire_regard(args[0])
     largeur, hauteur = ecran_taille()
     zone, reste = extraire_zone(args, largeur, hauteur)
     autour, reste = extraire_option(reste, "--autour")
@@ -2441,6 +2587,7 @@ def cmd_fenetre(args):
         raise SystemExit(f"✗ focus NON obtenu pour « {cands[0][1]} » ({cands[0][0]}) — fenêtre active :"
                          f" « {nom_apres or 'aucune'} ». Clique dans la fenêtre (zone neutre) puis vérifie `ecran etat`.")
     print(f"✓ fenêtre activée : {cands[0][1]} ({cands[0][0]})")
+    noter_fenetre_travail(int(cands[0][0], 16), cands[0][1], "fenetre")
     if deplacer:
         wid_dec = str(int(cands[0][0], 16))
         avant = geometrie_x11(wid_dec)
@@ -2929,7 +3076,7 @@ def suivre_carte(brut, motif, secondes):
     """SSE local : instantané initial, puis deltas ; JSON = un événement par ligne."""
     import urllib.parse
     import urllib.request
-    url = f"http://127.0.0.1:{PORT_VEILLE}/carte/flux?" + urllib.parse.urlencode({"fenetre": motif, "duree": secondes})
+    url = f"http://127.0.0.1:{PORT_REGARD}/carte/flux?" + urllib.parse.urlencode({"fenetre": motif, "duree": secondes})
     requete = urllib.request.Request(url, headers={"Accept": "text/event-stream"})
     try:
         with urllib.request.urlopen(requete, timeout=8) as r:
@@ -2965,7 +3112,7 @@ def veille_carte(brut, motif="", suivre=None):
     import urllib.request
     t0 = time.monotonic()
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{PORT_VEILLE}/carte?" + urllib.parse.urlencode({"fenetre": motif}), timeout=8) as r:
+        with urllib.request.urlopen(f"http://127.0.0.1:{PORT_REGARD}/carte?" + urllib.parse.urlencode({"fenetre": motif}), timeout=8) as r:
             d = json.load(r)
     except Exception as e:
         raise SystemExit(f"✗ pont veille injoignable (127.0.0.1:{PORT_VEILLE}) : {e}")
@@ -3106,16 +3253,123 @@ def cmd_veille(args):
                 montrer(l)
 
 
+def cmd_regard(args):
+    """La page qu'un agent lit À LA PLACE d'une image (service Rust `regard`, 127.0.0.1:8793, 07/11/2026) :
+    `ecran regard [--fenetre MOTIF] [--element eN] [--tout] [--lignes N] [--lecteur NOM] [--sans-memoire] [--json]`.
+    Lecture seule : ni réservation, ni cadre, ni capture. Chaque lecteur garde la mémoire de son dernier regard : la
+    page dit ce qui a changé POUR LUI (✚ nouveau, ✎ modifié, ✖ disparu). Les références `eN` se cliquent :
+    `ecran cliquer e12` (vérification fraîche par le service, refus si la cible a bougé ou est recouverte)."""
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    q = {"lecteur": agent_courant()}
+    brut = False
+    attendre, disparu, maxi, pas = None, None, 60.0, 0.3
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("--fenetre", "--element", "--lignes", "--lecteur") and i + 1 < len(args):
+            q[a[2:]] = args[i + 1]
+            i += 2
+            continue
+        if a in ("--attendre", "--disparu", "--max", "--pas") and i + 1 < len(args):
+            if a == "--attendre":
+                attendre = args[i + 1]
+            elif a == "--disparu":
+                disparu = args[i + 1]
+            elif a == "--max":
+                maxi = float(entier(args[i + 1], "S", 1, 3600))
+            else:
+                pas = entier(args[i + 1], "MS", 50, 5000) / 1000
+            i += 2
+            continue
+        if a == "--tout":
+            q["tout"] = "1"
+        elif a == "--sans-memoire":
+            q["memoriser"] = "0"
+        elif a == "--json":
+            brut = True
+        elif a == "--oeil":
+            # L'œil à la demande : capture + OCR + Qwen (vLLM local) sur la fenêtre, puis la page comme d'habitude.
+            try:
+                req = urllib.request.Request(f"http://127.0.0.1:{PORT_REGARD}/oeil?" + urllib.parse.urlencode({"fenetre": q.get("fenetre", "")}), method="POST")
+                with urllib.request.urlopen(req, timeout=75) as r:
+                    d = json.load(r)
+                print(f"œil sur « {d.get('titre')} » en {d.get('duree_ms', 0) / 1000:.1f} s : {d.get('lignes_ocr')} lignes lues, "
+                      f"{d.get('elements_oeil')} éléments vus — {d.get('scene', '')}")
+            except urllib.error.HTTPError as e:
+                try:
+                    raison = json.load(e).get("erreur", str(e))
+                except (ValueError, OSError):
+                    raison = str(e)
+                raise SystemExit(f"✗ œil : {raison}")
+            except Exception as e:
+                raise SystemExit(f"✗ regard inaccessible (127.0.0.1:{PORT_REGARD}) : {e}")
+        else:
+            raise SystemExit(f"✗ regard : option inconnue {a}\n  usage : ecran regard [--fenetre MOTIF] [--element eN] [--tout] [--lignes N] [--lecteur NOM] [--sans-memoire] [--json]"
+                             '\n          ecran regard --attendre "texte" | --disparu "texte" [--fenetre MOTIF] [--max S] [--pas MS]')
+        i += 1
+    if attendre or disparu:
+        return regard_attendre(attendre, disparu, q.get("fenetre", ""), maxi, pas)
+    if "lignes" in q:
+        q["lignes"] = str(entier(q["lignes"], "N", 10, 2000))
+    chemin_http = "/regard.json" if brut else "/regard"
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{PORT_REGARD}{chemin_http}?" + urllib.parse.urlencode(q), timeout=15) as r:
+            sys.stdout.write(r.read().decode("utf-8", "replace"))
+            if not brut:
+                sys.stdout.write("\n")
+    except Exception as e:
+        raise SystemExit(f"✗ regard inaccessible (127.0.0.1:{PORT_REGARD}, service pilote-ecran-regard) : {e}")
+
+
+def regard_attendre(motif, disparu, fenetre, maxi, pas):
+    """`ecran regard --attendre "Facture"` : attend qu'un élément (nom ou contenu) apparaisse dans la carte — ou
+    disparaisse avec `--disparu` — sans OCR ni capture ; exit 2 si le délai passe. Remplace `attendre --texte`
+    pour toute fenêtre lisible."""
+    import urllib.parse
+    import urllib.request
+    cible = (motif or disparu).lower()
+    debut = time.monotonic()
+    derniere = None
+    while True:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{PORT_REGARD}/carte?" + urllib.parse.urlencode({"fenetre": fenetre}), timeout=8) as r:
+                d = json.load(r)
+        except Exception as e:
+            raise SystemExit(f"✗ regard inaccessible (127.0.0.1:{PORT_REGARD}) : {e}")
+        trouves = [(f, e) for f in d.get("fenetres", []) for e in f.get("elements", [])
+                   if cible in (e.get("nom") or "").lower() or cible in (e.get("texte") or "").lower()]
+        derniere = d.get("revision")
+        if motif and trouves:
+            f, e = trouves[0]
+            print(f"✓ « {motif} » présent après {time.monotonic() - debut:.1f} s : {e.get('role')} « {e.get('nom')} » {e.get('id')}"
+                  f" dans « {f.get('titre')} » (révision {derniere})")
+            return
+        if disparu and not trouves:
+            print(f"✓ « {disparu} » absent après {time.monotonic() - debut:.1f} s (révision {derniere})")
+            return
+        if time.monotonic() - debut >= maxi:
+            raise SystemExit(f"✗ « {motif or disparu} » {'toujours absent' if motif else 'toujours présent'} après {maxi:.0f} s (révision {derniere}) ; exit 2") if False else _sortie2(f"« {motif or disparu} » {'toujours absent' if motif else 'toujours présent'} après {maxi:.0f} s (révision {derniere})")
+        time.sleep(pas)
+
+
+def _sortie2(message):
+    print(f"✗ {message}", file=sys.stderr)
+    sys.exit(2)
+
+
 COMMANDES = {
+    "regard": cmd_regard,
     "voir": cmd_voir, "texte": cmd_texte, "chercher": cmd_chercher, "diff": cmd_diff, "decrire": cmd_decrire,
-    "cliquer": cmd_cliquer, "taper": cmd_taper,
+    "cliquer": cmd_cliquer, "taper": cmd_taper, "captcha": cmd_captcha,
     "touche": cmd_touche, "defiler": cmd_defiler, "souris": cmd_souris,
     "lire": cmd_lire, "fenetres": cmd_fenetres, "fenetre": cmd_fenetre,
     "lancer": cmd_lancer, "attendre": cmd_attendre, "etat": cmd_etat,
     "prendre": cmd_prendre, "rendre": cmd_rendre,
     "stop": cmd_stop, "reprendre": cmd_reprendre, "journal": cmd_journal, "veille": cmd_veille,
 }
-SANS_X = {"etat", "stop", "prendre", "rendre", "journal", "veille"}
+SANS_X = {"etat", "stop", "prendre", "rendre", "journal", "veille", "regard"}
 # Commandes qui AGISSENT : journalisées (le texte tapé n'est jamais écrit, seulement sa longueur).
 JOURNALISEES = {"cliquer", "taper", "touche", "defiler", "souris", "lancer", "fenetre", "prendre", "rendre", "stop"}
 

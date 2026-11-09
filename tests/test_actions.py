@@ -578,3 +578,115 @@ class TestMouvementLent(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFenetreTravail(unittest.TestCase):
+    """09/11/2026 — plus aucune frappe hors de la fenêtre de travail ni dans une fenêtre de Félix (« frappes ratées »)."""
+    def setUp(self):
+        import commun
+        import ecran
+        self.ecran = ecran
+        self.bac = Bac()
+        self.addCleanup(self.bac.fermer)
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.stack.enter_context(mock.patch.dict(os.environ, self.bac.env()))
+        self.stack.enter_context(mock.patch.object(ecran, "ETAT", self.bac.etat))
+        self.stack.enter_context(mock.patch.object(commun, "ETAT", self.bac.etat))
+        self.actif = self.stack.enter_context(mock.patch.object(ecran, "fenetre_active", return_value=("4242", "Test", 1)))
+
+    def travail(self, wid, nom, age=0):
+        with open(self.bac.fichier("fenetre_travail.json"), "w") as f:
+            json.dump({"wid": wid, "nom": nom, "ts": time.time() - age, "par": "voir"}, f)
+
+    def test_premiere_frappe_note_la_fenetre(self):
+        self.ecran.verifier_fenetre_travail("taper")
+        with open(self.bac.fichier("fenetre_travail.json")) as f:
+            d = json.load(f)
+        self.assertEqual((d["wid"], d["nom"], d["par"]), (4242, "Test", "taper"))
+
+    def test_meme_fenetre_acceptee(self):
+        self.travail(4242, "Test")
+        self.ecran.verifier_fenetre_travail("touche")
+
+    def test_autre_fenetre_refusee(self):
+        self.travail(4242, "Test")
+        self.actif.return_value = ("999", "Autre", 2)
+        with self.assertRaisesRegex(SystemExit, "fenêtre de travail"):
+            self.ecran.verifier_fenetre_travail("taper")
+
+    def test_fenetre_de_travail_perimee_remplacee(self):
+        self.travail(4242, "Test", age=self.ecran.EXPIRATION_PILOTE + 5)
+        self.actif.return_value = ("999", "Autre", 2)
+        self.ecran.verifier_fenetre_travail("taper")        # périmée : la fenêtre active devient la fenêtre de travail
+
+    def test_fenetre_de_felix_toujours_refusee(self):
+        self.travail(777, "Conversation — jarvis (Workspace) - Visual Studio Code")
+        self.actif.return_value = ("777", "Conversation — jarvis (Workspace) - Visual Studio Code", 3)
+        with self.assertRaisesRegex(SystemExit, "fenêtre de Félix"):
+            self.ecran.verifier_fenetre_travail("taper")
+        with self.assertRaisesRegex(SystemExit, "fenêtre de Félix"):
+            self.ecran.verifier_fenetre_travail("taper", dans="Firefox")
+
+    def test_fenetre_de_felix_avec_dans_explicite(self):
+        self.actif.return_value = ("777", "Boîte de réception - Mailspring", 3)
+        self.ecran.verifier_fenetre_travail("taper", dans="Mailspring")
+
+    def test_dans_autre_fenetre_delegue_a_verifier_fenetre(self):
+        self.travail(4242, "Test")
+        self.actif.return_value = ("999", "Autre", 2)
+        self.ecran.verifier_fenetre_travail("taper", dans="Autre")   # `--dans` : pas de contrôle de la fenêtre de travail
+
+
+class TestFrappeHorsFenetreDeTravail(unittest.TestCase):
+    """Chaîne complète : la frappe est refusée AVANT toute capture et tout xdotool."""
+    setUp = TestActionsCarte.setUp
+    reponse = TestActionsCarte.reponse
+    def test_taper_refuse_apres_fermeture_de_la_fenetre_pilotee(self):
+        with open(self.bac.fichier("fenetre_travail.json"), "w") as f:
+            json.dump({"wid": 4242, "nom": "Réservation", "ts": time.time(), "par": "clic"}, f)
+        self.ecran.fenetre_active.return_value = ("999", "Conversation — Visual Studio Code", 2)
+        with self.assertRaisesRegex(SystemExit, "fenêtre de Félix"):
+            self.ecran.cmd_taper(["France", "--attendre", "0"])
+        self.xdotool.assert_not_called()
+        self.capture.assert_not_called()
+
+    def test_touche_refuse_fenetre_differente_du_dernier_voir(self):
+        with open(self.bac.fichier("fenetre_travail.json"), "w") as f:
+            json.dump({"wid": 4242, "nom": "Réservation", "ts": time.time(), "par": "voir"}, f)
+        self.ecran.fenetre_active.return_value = ("999", "Autre", 2)
+        with self.assertRaisesRegex(SystemExit, "fenêtre de travail"):
+            self.ecran.cmd_touche(["Return", "--attendre", "0"])
+        self.sh.assert_not_called()
+        self.capture.assert_not_called()
+
+
+class TestCaptcha(unittest.TestCase):
+    """`ecran captcha X Y L H` : découpe et agrandit le code ; en test, pas d'envoi ntfy."""
+    def setUp(self):
+        import commun
+        import ecran
+        self.ecran = ecran
+        self.bac = Bac()
+        self.addCleanup(self.bac.fermer)
+        self.bac.ecran_fixe(os.path.join(FIXTURES, "comptoir-2560.png"))
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.stack.enter_context(mock.patch.dict(os.environ, self.bac.env()))
+        self.stack.enter_context(mock.patch.object(ecran, "ETAT", self.bac.etat))
+        self.stack.enter_context(mock.patch.object(commun, "ETAT", self.bac.etat))
+        self.sortie = io.StringIO()
+        self.stack.enter_context(redirect_stdout(self.sortie))
+
+    def test_decoupe_et_agrandit(self):
+        from PIL import Image
+        self.ecran.cmd_captcha(["100", "100", "80", "30"])
+        img = Image.open(self.bac.fichier("captcha.png"))
+        self.assertEqual(img.size, (240, 90))
+        self.assertIn("pas d'envoi ntfy", self.sortie.getvalue())
+
+    def test_usage(self):
+        with self.assertRaisesRegex(SystemExit, "usage"):
+            self.ecran.cmd_captcha(["100", "100"])
+        with self.assertRaisesRegex(SystemExit, "positives"):
+            self.ecran.cmd_captcha(["100", "100", "0", "30"])

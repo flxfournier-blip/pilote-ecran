@@ -34,6 +34,77 @@ Licence MIT. Auteur : Félix Fournier, avec Claude (Anthropic) comme développeu
 
 # pilote-ecran — Claude pilote l'écran de JARVIS
 
+## 08/11/2026 après-midi — survivre à une coupure de la session graphique
+
+Le 08/11 à 10:15:34, GNOME Shell a planté (SIGSEGV pendant une recherche « Activités » : le fournisseur de
+recherche Caractères s'est fermé en pleine requête) et la nouvelle session est repartie sur **`:1`**. Tout ce qui
+avait `DISPLAY=:0` codé en dur est resté aveugle 3 h 30 : `regard` (« X11 : Connection refused » toutes les 5 s,
+alertes ntfy), `veille`, le TPE simulé, le remappage du bouton 8, et les agents (Hermès/Charli avaient hérité `:0`).
+Pire : un lecteur a réveillé le bus d'accessibilité ENTRE les deux sessions, avec l'ancien `:0` ; le registre
+AT-SPI ne trouvait pas l'écran et redémarrait 14 fois par seconde (1 Go, 28 % CPU, journal système noyé au point
+d'effacer l'historique d'avant 11:59).
+
+Corrigé ainsi :
+- **`commun.affichage()`** : garde DISPLAY si sa prise `/tmp/.X11-unix/X<n>` existe, sinon prend la prise vivante
+  la plus récente de l'utilisateur. Utilisé par `ecran.py` et `veille.py` (tests : `tests/test_cli.py`,
+  `TestAffichage`). Un agent qui a hérité d'un DISPLAY périmé retombe sur le bon écran sans redémarrage.
+- **Services liés à la session** : `pilote-ecran-regard`, `pilote-ecran-veille`, `jarvis-tpe-simule`,
+  `jarvis-button-remap`, `jarvis-dictee`, `jarvis-bridge` n'ont plus `Environment=DISPLAY=:0` ;
+  `PartOf=` + `WantedBy=graphical-session.target` → arrêtés quand la session coupe, relancés avec le DISPLAY de
+  la nouvelle. Copie de l'unité regard : `regard/pilote-ecran-regard.service`.
+- **Bus d'accessibilité** : `~/.config/systemd/user/at-spi-dbus-bus.service.d/affichage-vivant.conf`
+  (`ExecStartPre=xset q`) : il refuse de démarrer tant que son DISPLAY ne répond pas ; la demande suivante, une
+  fois la nouvelle session déclarée, le lance avec le bon.
+- **Cause** : fournisseurs de recherche GNOME coupés (Caractères, Contacts, Agenda, Horloges, Mots de passe,
+  Terminal, Météo — `org.gnome.desktop.search-providers disabled`). Restent applis, fichiers, paramètres, calculatrice.
+
+Les applis déjà ouvertes au moment d'une coupure du bus AT-SPI (VS Code, Charli, Proton Bridge) restent « muettes »
+pour `regard` jusqu'à leur propre redémarrage.
+
+## 09/11/2026 — plus de frappes ratées : fenêtre de travail, fenêtres de Félix, et `ecran captcha`
+
+Vécu le matin : `ecran cliquer @"FERMER"` a fermé la fenêtre Firefox pilotée (le texte « Fermer » était le bouton de la
+fenêtre), la fenêtre active est devenue le VS Code de Félix, et « France », Flèche bas, Entrée y sont partis. Félix :
+« améliore pour éviter les frappes ratées ». Trois changements dans `ecran.py` :
+
+1. **Fenêtre de travail** (`fenetre_travail.json` dans le dossier d'état) : chaque `voir`, chaque clic et chaque
+   `fenetre` notent la fenêtre observée ou activée. `taper` et `touche` sans `--dans` refusent de frapper si la fenêtre
+   active n'est plus celle-là (« n'est pas la fenêtre de travail … : rien n'est tapé »). Une note vieille de plus de
+   30 minutes ne compte plus ; la première frappe sans note enregistre la fenêtre active. Le mode `--sans-capture` garde
+   son propre contrôle (la carte épingle la fenêtre).
+2. **Fenêtres de Félix** (`FENETRES_DE_FELIX` : Visual Studio Code, Mailspring, Proton Mail Bridge, Codex, Agents) :
+   aucune frappe n'y part, même si c'est la fenêtre de travail, sauf `--dans "<titre>"` qui la nomme — c'est la règle 4
+   d'AGENTS.md (ses fenêtres sont en lecture seule sauf demande explicite).
+3. **`ecran captcha X Y L H [--message "…"]`** (Félix : « pour les captcha, envoie-moi une notification, je vais le
+   lire ») : découpe la zone du code à l'écran, l'agrandit ×3 (`captcha.png` dans le dossier d'état) et l'envoie sur son
+   téléphone par ntfy en pièce jointe (priorité haute). L'agent attend la réponse de Félix dans la conversation, puis
+   `ecran taper "<code>"`. Lecture seule, pas de clic ; en test (dossier d'état factice) rien n'est envoyé.
+
+Tests : `tests/test_actions.py` (TestFenetreTravail, TestFrappeHorsFenetreDeTravail, TestCaptcha).
+
+## 09/11/2026 — `regard` : une chute du bus AT-SPI n'est plus une alerte
+
+Le 09/11 à 10 h 05, Félix a reçu sur son téléphone « AT-SPI : flux d'événements terminé (bus d'accessibilité tombé ?) :
+reconnexion dans 3 s » pendant que le pilote ouvrait et fermait des fenêtres Firefox. Le service ne s'était pas arrêté
+(aucun redémarrage systemd) : il s'était reconnecté seul en 3 s, mais l'alerte partait en ntfy « grave » dès la première chute.
+Règle depuis le 09/11 (`regard/src/arbre.rs`, `boucle`) : une chute isolée du flux d'événements se note dans le journal de la
+page sans ntfy ; **3 chutes en 5 minutes**, ou un bus **indisponible plus de 60 s**, deviennent une alerte grave (ntfy, au
+plus une par 30 min comme avant). Le retour du bus est tracé « AT-SPI : reconnecté ». Consigne de Félix : « il faut que tu
+règles pour que ça ne plante jamais » — le service ne plante pas, il se reconnecte ; c'est le bruit qui est supprimé.
+Binaire reconstruit (`~/.cargo/bin/cargo build --release`), service relancé, `/sante` ok, 241 tests verts.
+
+## 07→08/11/2026 — `regard` : l'écran en données vivantes, sans capture (Rust)
+
+Félix : « mon rêve, ça sera qu'il n'y ait plus de capture et que tu saches ce qu'il y a à l'écran comme si tu le
+regardais ». Nouveau cœur de perception dans [`regard/`](regard/README.md) (Rust, service `pilote-ecran-regard`,
+127.0.0.1:8793) : X11 + AT-SPI par le cache des applications + DevTools (Chrome du pilote, devant ou derrière) +
+annonces, identités `eN` stables, mémoire par lecteur. **`ecran regard`** rend la page qu'un agent lit à la place
+d'une image (scène, « depuis ton dernier regard ✚ ✎ ✖ », fenêtre active en plan) ; **`ecran cliquer e12`** clique
+une référence après vérification fraîche par le service (`/carte/cible`, hit-test de l'application). `ecran.py`
+lit désormais la carte sur 8793 ; `veille.py` garde les événements (8792) et fait suivre les annonces. Aveugle,
+sciemment, sur les jeux, vidéos et applis sans arbre ni annonce (décision de Félix). Détails, mesures et pièges :
+[regard/README.md](regard/README.md).
+
 Créé le 08/09/2026 sur demande de Félix (« ça regarde l'écran comme tu fais
 avec le connecteur Chrome mais sur tout l'écran de l'ordi »). C'est du
 « computer use » local : Claude Code (dans VS Code) regarde une capture et

@@ -1,0 +1,28 @@
+[Unit]
+Description=Pilote écran — regard : l'écran en données vivantes pour un agent, sans capture (127.0.0.1:8793)
+Documentation=file:///home/fournier/jarvis/pilote-ecran/regard/README.md
+After=graphical-session.target
+# Suit la session graphique (08/11/2026) : arrêté quand elle coupe, relancé quand elle revient, avec le DISPLAY
+# de la NOUVELLE session (le numéro change : :0 → :1 ce jour-là, et « Environment=DISPLAY=:0 » l'avait rendu aveugle 3 h 30).
+PartOf=graphical-session.target
+StartLimitIntervalSec=0
+# Si le service meurt, Félix est prévenu sur son téléphone (ntfy), et systemd relance.
+OnFailure=pilote-ecran-alerte.service
+
+[Service]
+Type=simple
+Environment=XAUTHORITY=/run/user/1000/gdm/Xauthority
+Environment=REGARD_PORT=8793
+Environment=REGARD_CDP_PORTS=9222,9223,9224
+# Les instantanés DOM (plusieurs Mo par page Chrome) fragmentent glibc : deux arènes suffisent, la mémoire rendue.
+Environment=MALLOC_ARENA_MAX=2
+Environment=MALLOC_TRIM_THRESHOLD_=262144
+ExecStart=/home/fournier/jarvis/pilote-ecran/regard/target/release/regard
+Restart=on-failure
+RestartSec=5
+Nice=10
+MemoryMax=300M
+CPUWeight=50
+
+[Install]
+WantedBy=graphical-session.target

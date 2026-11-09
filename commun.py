@@ -41,6 +41,39 @@ def effacer(*noms):
             pass
 
 
+X11_PRISES = "/tmp/.X11-unix"
+
+
+def affichage(display=None, prises=X11_PRISES):
+    """L'affichage X11 VIVANT de l'utilisateur.
+
+    Le numéro change quand la session graphique redémarre (08/11/2026 : `:0` →
+    `:1` après la coupure de 10:16), et un DISPLAY hérité par un service lancé
+    avant reste figé sur l'ancien : `regard` et `veille` ont tourné 3 h 30 sur
+    « Connection refused », Charli pilotait un écran disparu. On garde DISPLAY
+    s'il a encore sa prise `X<n>` ; sinon la prise la plus récente de
+    l'utilisateur. Un affichage distant (`hôte:n`) n'est pas jugé."""
+    d = os.environ.get("DISPLAY") if display is None else display
+    if d and not d.startswith(":"):
+        return d
+    if d:
+        n = d[1:].split(".")[0]
+        if n.isdigit() and os.path.exists(os.path.join(prises, f"X{n}")):
+            return d
+    vivantes = []
+    try:
+        for nom in os.listdir(prises):
+            if nom.startswith("X") and nom[1:].isdigit():
+                st = os.stat(os.path.join(prises, nom))
+                if st.st_uid == os.getuid():
+                    vivantes.append((st.st_mtime, int(nom[1:])))
+    except OSError:
+        pass
+    if vivantes:
+        return f":{max(vivantes)[1]}"
+    return d or ":0"
+
+
 def pid_vivant(pid):
     try:
         os.kill(pid, 0)

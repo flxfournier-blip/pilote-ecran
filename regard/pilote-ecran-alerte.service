@@ -1,0 +1,6 @@
+[Unit]
+Description=Pilote écran — alerte ntfy quand un service du pilote tombe (OnFailure)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'curl -s -m 8 -o /dev/null -H "Title: JARVIS — pilote-ecran" -H "Priority: high" -H "Tags: rotating_light" -d "Le service regard (pilote-ecran) est tombé : systemd le relance. journalctl --user -u pilote-ecran-regard" "https://ntfy.sh/$(cat %h/.jarvis/ntfy_topic)"'
